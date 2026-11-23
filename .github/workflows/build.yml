@@ -1,128 +1,183 @@
-          [main]
-          plugins=keyfile
-          NM
+
+name: Build RAMForsaken ISO
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Prepare disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/hostedtoolcache || true
+          df -h /
+
+      - name: Build RAMForsaken operating system
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p ramforsaken
+
+          cat > ramforsaken/build.sh <<'BUILD_SCRIPT'
+          #!/bin/bash
+          set -Eeuo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+
+          mkdir -p work
+          cd work
+
+          lb config \
+            --distribution trixie \
+            --architectures amd64 \
+            --binary-images iso-hybrid \
+            --archive-areas 'main contrib non-free-firmware' \
+            --debian-installer false \
+            --bootappend-live 'boot=live components toram username=player locales=ko_KR.UTF-8 keyboard-layouts=us'
+
+          mkdir -p config/package-lists
+          mkdir -p config/includes.chroot/etc/lightdm/lightdm.conf.d
+          mkdir -p config/includes.chroot/etc/skel/.config/openbox
+          mkdir -p config/includes.chroot/usr/local/bin
+          mkdir -p config/hooks/live
+
+          cat > config/package-lists/ramforsaken.list.chroot <<'PKGS'
+          linux-image-amd64
+          live-boot
+          live-config
+          systemd-sysv
+          xserver-xorg
+          xserver-xorg-video-amdgpu
+          xserver-xorg-input-libinput
+          lightdm
+          openbox
+          network-manager
+          flatpak
+          dbus-x11
+          ca-certificates
+          mesa-vulkan-drivers
+          libgl1-mesa-dri
+          firmware-amd-graphics
+          firmware-linux-free
+          fcitx5
+          fcitx5-hangul
+          fonts-noto-cjk
+          locales
+          sudo
+          pciutils
+          PKGS
+
+          cat > config/includes.chroot/etc/lightdm/lightdm.conf.d/50-ramforsaken.conf <<'LIGHTDM'
+          [Seat:*]
+          autologin-user=player
+          autologin-user-timeout=0
+          user-session=openbox
+          LIGHTDM
+
           cat > config/includes.chroot/etc/skel/.config/openbox/autostart <<'AUTOSTART'
           #!/bin/sh
-          # The X session is the minimal window manager. No desktop shell or panel.
-          fcitx5 -d >/dev/null 2>&1 &
-          # Do not start Sober until network is ready, but avoid infinite startup delay.
-          ( for n in $(seq 1 20); do /usr/bin/nm-online -q -t 2 && break; sleep 1; done; /usr/local/bin/ramforsaken-sober ) >/tmp/sober-session.log 2>&1 &
-          AUTOSTART
-          cat > config/includes.chroot/etc/skel/.config/openbox/menu.xml <<'MENU'
-          <?xml version="1.0" encoding="utf-8"?>
-          <openbox_menu xmlns="http://openbox.org/3.4/menu">
-           <menu id="root-menu" label="RAMForsaken">
-            <item label="Sober 실행 / Run Sober"><action name="Execute"><command>/usr/local/bin/ramforsaken-sober</command></action></item>
-            <separator/>
-            <item label="전원 끄기 / Power Off"><action name="Execute"><command>systemctl poweroff</command></action></item>
-           </menu>
-          </openbox_menu>
-          MENU
-          cat > config/includes.chroot/etc/skel/.config/openbox/rc.xml <<'RC'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <openbox_config xmlns="http://openbox.org/3.4/rc">
-           <keyboard>
-            <keybind key="C-A-Delete"><action name="Execute"><command>systemctl poweroff</command></action></keybind>
-           </keyboard>
-           <mouse>
-            <context name="Root"><mousebind button="Right" action="Press"><action name="ShowMenu"><menu>root-menu</menu></action></mousebind></context>
-           </mouse>
-          </openbox_config>
-          RC
-          cat > config/includes.chroot/etc/skel/.config/fcitx5/profile <<'PROFILE'
-          [Groups/0]
-          Name=Default
-          Default Layout=us
-          DefaultIM=keyboard-us
-          
-          [Groups/0/Items/0]
-          Name=keyboard-us
-          Layout=
-          
-          [Groups/0/Items/1]
-          Name=hangul
-          Layout=
-          
-          [GroupOrder]
-          0=Default
-          PROFILE
-          cat > config/includes.chroot/usr/local/bin/ramforsaken-sober <<'SOBER'
-          #!/bin/sh
-          # Native Flatpak Sober pre-installed during image build; Roblox itself is not.
           export GTK_IM_MODULE=fcitx
           export QT_IM_MODULE=fcitx
           export XMODIFIERS=@im=fcitx
+
+          fcitx5 -d >/tmp/fcitx5.log 2>&1 &
+          (sleep 5; /usr/local/bin/ramforsaken-sober) >/tmp/sober.log 2>&1 &
+          AUTOSTART
+
+          cat > config/includes.chroot/etc/skel/.config/openbox/menu.xml <<'MENU'
+          <?xml version="1.0" encoding="utf-8"?>
+          <openbox_menu xmlns="http://openbox.org/3.4/menu">
+            <menu id="root-menu" label="RAMForsaken">
+              <item label="Sober">
+                <action name="Execute">
+                  <command>/usr/local/bin/ramforsaken-sober</command>
+                </action>
+              </item>
+              <item label="Power off">
+                <action name="Execute">
+                  <command>systemctl poweroff</command>
+                </action>
+              </item>
+            </menu>
+          </openbox_menu>
+          MENU
+
+          cat > config/includes.chroot/usr/local/bin/ramforsaken-sober <<'SOBER'
+          #!/bin/sh
           exec /usr/bin/flatpak run --system org.vinegarhq.Sober
           SOBER
-          cat > config/includes.chroot/usr/local/bin/ramforsaken-check <<'CHECK'
-          #!/bin/sh
-          printf '=== RAM / available ===\n'; free -h
-          printf '\n=== Root mount ===\n'; findmnt -no SOURCE,FSTYPE,OPTIONS /
-          printf '\n=== Boot arguments ===\n'; cat /proc/cmdline
-          printf '\n=== Swap ===\n'; swapon --show || true
-          printf '\n=== Sober ===\n'; flatpak info --system org.vinegarhq.Sober || true
-          printf '\n=== Live mounts ===\n'; findmnt -rn -o TARGET,SOURCE,FSTYPE | grep -E '^(/run/live|/lib/live|/media|/mnt)' || true
-          printf '\n=== RAM available KiB ===\n'; awk '/MemAvailable:/ {print $2}' /proc/meminfo
-          printf '\n=== Live USB source ===\n'; lsblk -o NAME,TYPE,FSTYPE,MOUNTPOINTS | head -45
-          printf '\n=== GPU ===\n'; (lspci -nn | grep -iE 'VGA|3D controller|Display controller') || true
-          printf '\nIMPORTANT: USB unplug requires manual dependency verification; do not unplug if any live mount relies on USB.\n'
-          CHECK
-          cat > config/hooks/live/0100-locale.hook.chroot <<'HOOK'
+
+          cat > config/hooks/live/0100-setup.hook.chroot <<'SETUP'
           #!/bin/sh
           set -eu
           sed -i 's/^# *ko_KR.UTF-8 UTF-8/ko_KR.UTF-8 UTF-8/' /etc/locale.gen
           locale-gen ko_KR.UTF-8
           update-locale LANG=ko_KR.UTF-8
-          cat >> /etc/environment <<'ENV'
+
+          cat > /etc/environment <<'ENV'
+          LANG=ko_KR.UTF-8
           GTK_IM_MODULE=fcitx
           QT_IM_MODULE=fcitx
           XMODIFIERS=@im=fcitx
           ENV
-          HOOK
-          cat > config/hooks/live/0200-sober.hook.chroot <<'HOOK'
+          SETUP
+
+          cat > config/hooks/live/0200-sober.hook.chroot <<'INSTALL_SOBER'
           #!/bin/sh
           set -eu
-          # Sober app and Flatpak runtime are both preloaded into the resulting image.
-          # This step requires network access and may fail if Sober/Flathub changes.
           flatpak remote-add --system --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
-          # Flatpak installations in a live-build chroot often need a temporary session bus.
-          if command -v dbus-run-session >/dev/null 2>&1; then
-            dbus-run-session -- flatpak install --system --noninteractive --assumeyes flathub org.vinegarhq.Sober
-          else
-            flatpak install --system --noninteractive --assumeyes flathub org.vinegarhq.Sober
-          fi
-          flatpak info --system org.vinegarhq.Sober >/dev/null
-          # Ensure Flatpak app and runtime OSTree repositories are committed before squashfs creation.
-          flatpak list --system --app --columns=application | grep -Fx org.vinegarhq.Sober
-          HOOK
-          chmod +x config/hooks/live/*.hook.chroot \
-           config/includes.chroot/usr/local/bin/* \
-           config/includes.chroot/etc/skel/.config/openbox/autostart
-          lb build 2>&1 | tee "$ROOT/build.log"
-          ls -lh ./*.iso
-          sha256sum ./*.iso | tee "$ROOT/ISO_SHA256SUMS.txt"
-          printf '\nISO produced, not boot-tested. Verify before Rufus use.\n' 
-          RAMFORSK_BUILD_EOF
+          dbus-run-session -- flatpak install --system --noninteractive --assumeyes flathub org.vinegarhq.Sober
+          flatpak info --system org.vinegarhq.Sober
+          INSTALL_SOBER
+
+          chmod +x config/hooks/live/*.hook.chroot
+          chmod +x config/includes.chroot/usr/local/bin/ramforsaken-sober
+          chmod +x config/includes.chroot/etc/skel/.config/openbox/autostart
+
+          lb build 2>&1 | tee /work/ramforsaken/build.log
+
+          iso=$(find . -maxdepth 1 -type f -name '*.iso' -print -quit)
+          test -n "$iso"
+
+          cp "$iso" /work/ramforsaken/RAMForsaken.iso
+          sha256sum /work/ramforsaken/RAMForsaken.iso > /work/ramforsaken/SHA256SUMS.txt
+          BUILD_SCRIPT
+
           chmod +x ramforsaken/build.sh
-      - name: Free runner disk space
-        run: |
-          sudo rm -rf /usr/local/lib/android /opt/hostedtoolcache /usr/share/dotnet /usr/local/share/powershell || true
-          df -h /
-      - name: Build ISO using Debian 13
-        run: |
-          docker run --rm --privileged \
-            -v "$GITHUB_WORKSPACE/ramforsaken:/src" -w /src debian:trixie bash -euc '
+
+          sudo docker run --rm --privileged \
+            --volume "$GITHUB_WORKSPACE:/work" \
+            --workdir /work \
+            debian:trixie bash -euc '
               export DEBIAN_FRONTEND=noninteractive
               apt-get update
-              apt-get install -y --no-install-recommends live-build debootstrap squashfs-tools xorriso ca-certificates curl gnupg2 grub-pc-bin grub-efi-amd64-bin isolinux syslinux-common
-              ./build.sh
+              apt-get install -y --no-install-recommends \
+                live-build \
+                debootstrap \
+                squashfs-tools \
+                xorriso \
+                ca-certificates \
+                curl \
+                gnupg \
+                grub-pc-bin \
+                grub-efi-amd64-bin \
+                isolinux \
+                syslinux-common
+              ./ramforsaken/build.sh
             '
-      - name: Check ISO output
-        run: |
-          iso=$(find ramforsaken/work -maxdepth 1 -type f -name "*.iso" -print -quit)
-          test -n "$iso"
-          test "$(stat -c %s "$iso")" -gt 100000000
-          sha256sum "$iso" > ramforsaken/SHA256SUMS.txt
-          file "$iso"
-      - name: Downloadable ISO artifact
+
+          test -s ramforsaken/RAMForsaken.iso
+
+      - name: Upload ISO
         uses: actions/upload-artifact@v4
+        with:
+          name: RAMForsaken-ISO
+          path: |
+            ramforsaken/RAMForsaken.iso
+            ramforsaken/SHA256SUMS.txt
+          if-no-files-found: error
